@@ -1,0 +1,9 @@
+Package: com.blackHelper.ios
+Name: BlackHelper
+Version: 1.0
+Architecture: iphoneos-arm
+Description: BlackHelper
+Maintainer: black
+Author: black
+Section: System
+Tag: role::hacker

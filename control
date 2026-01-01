@@ -1,0 +1,8 @@
+Package: com.black.ios
+Name: black ios
+Version: 0.0.1
+Architecture: iphoneos-arm
+Description: An awesome application!
+Maintainer: black
+Author: black
+Section: system

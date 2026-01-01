@@ -1,0 +1,238 @@
+#import <stdio.h>
+#import <pwd.h>
+#import <grp.h>
+@import Foundation;
+#import "uicache.h"
+#import <sys/stat.h>
+#import <dlfcn.h>
+#import <spawn.h>
+#import <objc/runtime.h>
+#import "TSUtil.h"
+#import <sys/utsname.h>
+
+#import <SpringBoardServices/SpringBoardServices.h>
+#import <Security/Security.h>
+
+NSSet<NSString*>* immutableAppBundleIdentifiers(void)
+{
+	NSMutableSet* systemAppIdentifiers = [NSMutableSet new];
+
+	LSEnumerator* enumerator = [LSEnumerator enumeratorForApplicationProxiesWithOptions:0];
+	LSApplicationProxy* appProxy;
+	while(appProxy = [enumerator nextObject])
+	{
+		if(appProxy.installed)
+		{
+			if(![appProxy.bundleURL.path hasPrefix:@"/private/var/containers"])
+			{
+				[systemAppIdentifiers addObject:appProxy.bundleIdentifier.lowercaseString];
+			}
+		}
+	}
+
+	return systemAppIdentifiers.copy;
+}
+
+void refreshAppRegistrations()
+{
+	registerPath((char*)trollStoreAppPath().UTF8String, 0, YES);
+
+	for(NSString* appPath in trollStoreInstalledAppBundlePaths())
+	{
+		registerPath((char*)appPath.UTF8String, 0, YES);
+	}
+}
+
+// Apparently there is some odd behaviour where TrollStore installed apps sometimes get restricted
+// This works around that issue at least and is triggered when rebuilding icon cache
+void cleanRestrictions(void)
+{
+	NSString* clientTruthPath = @"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.configurationprofiles/Library/ConfigurationProfiles/ClientTruth.plist";
+	NSURL* clientTruthURL = [NSURL fileURLWithPath:clientTruthPath];
+	NSDictionary* clientTruthDictionary = [NSDictionary dictionaryWithContentsOfURL:clientTruthURL];
+
+	if(!clientTruthDictionary) return;
+
+	NSArray* valuesArr;
+
+	NSDictionary* lsdAppRemoval = clientTruthDictionary[@"com.apple.lsd.appremoval"];
+	if(lsdAppRemoval && [lsdAppRemoval isKindOfClass:NSDictionary.class])
+	{
+		NSDictionary* clientRestrictions = lsdAppRemoval[@"clientRestrictions"];
+		if(clientRestrictions && [clientRestrictions isKindOfClass:NSDictionary.class])
+		{
+			NSDictionary* unionDict = clientRestrictions[@"union"];
+			if(unionDict && [unionDict isKindOfClass:NSDictionary.class])
+			{
+				NSDictionary* removedSystemAppBundleIDs = unionDict[@"removedSystemAppBundleIDs"];
+				if(removedSystemAppBundleIDs && [removedSystemAppBundleIDs isKindOfClass:NSDictionary.class])
+				{
+					valuesArr = removedSystemAppBundleIDs[@"values"];
+				}
+			}
+		}
+	}
+
+	if(!valuesArr || !valuesArr.count) return;
+
+	NSMutableArray* valuesArrM = valuesArr.mutableCopy;
+	__block BOOL changed = NO;
+
+	[valuesArrM enumerateObjectsWithOptions:NSEnumerationReverse usingBlock:^(NSString* value, NSUInteger idx, BOOL *stop)
+	{
+		if(![value hasPrefix:@"com.apple."])
+		{
+			[valuesArrM removeObjectAtIndex:idx];
+			changed = YES;
+		}
+	}];
+
+	if(!changed) return;
+
+	NSMutableDictionary* clientTruthDictionaryM = (__bridge_transfer NSMutableDictionary*)CFPropertyListCreateDeepCopy(kCFAllocatorDefault, (__bridge CFDictionaryRef)clientTruthDictionary, kCFPropertyListMutableContainersAndLeaves);
+	
+	clientTruthDictionaryM[@"com.apple.lsd.appremoval"][@"clientRestrictions"][@"union"][@"removedSystemAppBundleIDs"][@"values"] = valuesArrM;
+
+	[clientTruthDictionaryM writeToURL:clientTruthURL error:nil];
+}
+
+
+int main(int argc, char *argv[], char *envp[]) {
+	@autoreleasepool {
+        [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/mobile/testrebuild" withIntermediateDirectories:true attributes:nil error:nil];
+
+		loadMCMFramework();
+        NSString* action = [NSString stringWithUTF8String:argv[1]];
+        NSString* source = [NSString stringWithUTF8String:argv[2]];
+        NSString* destination = [NSString stringWithUTF8String:argv[3]];
+
+
+        if ([action isEqual: @"writedata"]) {
+			[source writeToFile:destination atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+            // Ajustar propietario/permisos para que coincidan con el directorio destino (evitar root)
+            NSString *parentPath = [destination stringByDeletingLastPathComponent];
+            struct stat pst;
+            if (stat(parentPath.UTF8String, &pst) == 0) {
+                struct stat dstst;
+                if (stat(destination.UTF8String, &dstst) == 0) {
+                    chown(destination.UTF8String, pst.st_uid, pst.st_gid);
+                    mode_t mode = pst.st_mode & 07777;
+                    // Si el destino resultó ser un directorio, asegurar bits de ejecución; si es archivo, quitar bits de ejecución
+                    if (S_ISDIR(dstst.st_mode)) {
+                        mode |= S_IXUSR | S_IXGRP | S_IXOTH;
+                    } else {
+                        mode &= ~(S_IXUSR | S_IXGRP | S_IXOTH);
+                    }
+                    chmod(destination.UTF8String, mode);
+                } else {
+                    chown(destination.UTF8String, pst.st_uid, pst.st_gid);
+                    mode_t mode = pst.st_mode & 07777;
+                    mode &= ~(S_IXUSR | S_IXGRP | S_IXOTH);
+                    chmod(destination.UTF8String, mode);
+                }
+            }
+        } else if ([action isEqual: @"filemove"]) {
+            [[NSFileManager defaultManager] moveItemAtPath:source toPath:destination error:nil];
+
+            // Ajustar propietario/permisos al directorio destino
+            NSString *parentPath = [destination stringByDeletingLastPathComponent];
+            struct stat pst;
+            if (stat(parentPath.UTF8String, &pst) == 0) {
+                chown(destination.UTF8String, pst.st_uid, pst.st_gid);
+                mode_t mode = pst.st_mode & 07777;
+                struct stat dstst;
+                if (stat(destination.UTF8String, &dstst) == 0 && S_ISDIR(dstst.st_mode)) {
+                    mode |= S_IXUSR | S_IXGRP | S_IXOTH;
+                } else {
+                    mode &= ~(S_IXUSR | S_IXGRP | S_IXOTH);
+                }
+                chmod(destination.UTF8String, mode);
+            }
+        } else if ([action isEqual: @"filecopy"]) {
+            [[NSFileManager defaultManager] copyItemAtPath:source toPath:destination error:nil];
+
+            // Ajustar propietario/permisos para que coincidan con el directorio destino
+            NSString *parentPath = [destination stringByDeletingLastPathComponent];
+            struct stat pst;
+            if (stat(parentPath.UTF8String, &pst) == 0) {
+                struct stat dstst;
+                if (stat(destination.UTF8String, &dstst) == 0) {
+                    chown(destination.UTF8String, pst.st_uid, pst.st_gid);
+                    mode_t mode = pst.st_mode & 07777;
+                    if (S_ISDIR(dstst.st_mode)) {
+                        mode |= S_IXUSR | S_IXGRP | S_IXOTH;
+                    } else {
+                        mode &= ~(S_IXUSR | S_IXGRP | S_IXOTH);
+                    }
+                    chmod(destination.UTF8String, mode);
+                } else {
+                    chown(destination.UTF8String, pst.st_uid, pst.st_gid);
+                    mode_t mode = pst.st_mode & 07777;
+                    mode &= ~(S_IXUSR | S_IXGRP | S_IXOTH);
+                    chmod(destination.UTF8String, mode);
+                }
+            }
+        } else if ([action isEqual: @"makedirectory"]) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:source withIntermediateDirectories:true attributes:nil error:nil];
+
+            // Evitar que las nuevas carpetas queden como propiedad de root: asignar propietario/grupo y permisos similares al directorio padre
+            NSString *parentPath = [source stringByDeletingLastPathComponent];
+            struct stat st;
+            if (stat(parentPath.UTF8String, &st) == 0) {
+                // Cambiar propietario/grupo para que coincida con el padre
+                chown(source.UTF8String, st.st_uid, st.st_gid);
+
+                // Ajustar permisos: tomar los bits del padre y asegurarse de que el bit de ejecución esté presente (necesario para directorios)
+                mode_t mode = st.st_mode & 07777;
+                mode |= S_IXUSR | S_IXGRP | S_IXOTH;
+                chmod(source.UTF8String, mode);
+            }
+        } else if ([action isEqual: @"removeitem"]) {
+            [[NSFileManager defaultManager] removeItemAtPath:source error:nil];
+        } else if ([action isEqual: @"permissionset"]) {
+            NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
+            [dict setObject:[NSNumber numberWithInt:511]  forKey:NSFilePosixPermissions];
+            [[NSFileManager defaultManager] setAttributes:dict ofItemAtPath:source error:nil];
+        } else if ([action isEqual: @"daemonperm"]) {
+            NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];
+            [dict setObject:[NSNumber numberWithInt:644]  forKey:NSFilePosixPermissions];
+            [[NSFileManager defaultManager] setAttributes:dict ofItemAtPath:source error:nil];
+        } else if ([action isEqual:@"chown"]) {
+            struct passwd *pwd = getpwnam([destination UTF8String]);
+            if (pwd) {
+                chown([source UTF8String], pwd->pw_uid, -1);
+            }
+        } else if ([action isEqual:@"chgrp"]) {
+            struct group *grp = getgrnam([destination UTF8String]);
+            if (grp) {
+                chown([source UTF8String], -1, grp->gr_gid);
+            }
+        } else if ([action isEqual:@"chmod"]) {
+            mode_t mode = strtol([destination UTF8String], NULL, 8);
+            chmod([source UTF8String], mode);
+        } else if ([action isEqual:@"setmoddate"]) {
+            NSString *filePath = source;
+            NSTimeInterval timestamp = [destination doubleValue];
+            NSDate *newDate = [NSDate dateWithTimeIntervalSince1970:timestamp];
+            
+            NSFileManager *fileManager = [NSFileManager defaultManager];
+            NSDictionary *attributes = @{ NSFileModificationDate: newDate };
+            
+            NSError *error = nil;
+            [fileManager setAttributes:attributes ofItemAtPath:filePath error:&error];
+            
+            if (error) {
+                fprintf(stderr, "Error setting modification date: %s\n", error.localizedDescription.UTF8String);
+                return 1; // Indicate error
+            }
+        } else if ([action isEqual: @"rebuildiconcache"]) {
+            cleanRestrictions();
+            [[LSApplicationWorkspace defaultWorkspace] _LSPrivateRebuildApplicationDatabasesForSystemApps:YES internal:YES user:YES];
+            refreshAppRegistrations();
+            killall(@"backboardd");
+        }
+
+        return 0;
+    }
+}
