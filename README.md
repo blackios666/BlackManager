@@ -1,6 +1,6 @@
-# blackios 🖤
+# Black Manager 🖤
 
-**blackios** es una aplicación de utilidades para iOS que ofrece un conjunto de herramientas para explorar y editar archivo y datos en el dispositivo: navegador de archivos, editor de texto, visor de imágenes y fuentes, editor de PLIST, visor de SQLite, gestión de apps y más.
+**Black Manager** es una aplicación de utilidades para iOS que ofrece un conjunto de herramientas para explorar y editar archivo y datos en el dispositivo: navegador de archivos, editor de texto, visor de imágenes y fuentes, editor de PLIST, visor de SQLite, gestión de apps y más.
 
 > Nota: Este repositorio incluye un `RootHelper` con licencia GNU GPLv3 (ver `RootHelper/LICENSE`). Asegúrate de revisar las licencias de los componentes incluidos antes de redistribuir.
 
