@@ -1,4 +1,4 @@
-# Black Manager 🖤
+# Black Manager
 
 **Black Manager** es una aplicación de utilidades para iOS que ofrece un conjunto de herramientas para explorar y editar archivo y datos en el dispositivo: navegador de archivos, editor de texto, visor de imágenes y fuentes, editor de PLIST, visor de SQLite, gestión de apps y más.
 
